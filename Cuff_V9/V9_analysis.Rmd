@@ -1,0 +1,200 @@
+---
+title: "V9"
+output: html_document
+date: "2023-05-15"
+---
+
+### Load data and libraries, set plot themes, some data wrangling
+```{r, echo = FALSE}
+#load libraries
+library(tidyverse)
+library(BayesFactor)
+library(circular)
+library(viridis)
+
+# load data
+setwd('/Users/hkular/Documents/Github/noisefx')
+V9 <- read_csv('WM_noiseV9.csv')
+
+# get error in degrees absolute values
+V9$err = abs(V9$acc)
+
+# fix V9 if no distractor task ==0
+V9$task <- ifelse(V9$distractor == 0, 0, 
+                     ifelse(V9$distractor == .65 & V9$distractortask == 1, 1, 0))
+
+
+# make numerical values that are factors actually factors
+V9$distractor <- factor(V9$distractor, levels = c(0.00,0.65), labels = c('none', 'present'))
+V9$kappa <- factor(V9$kappa, levels = c(5000,100,50), labels = c('low', 'medium','high'))
+V9$task <- factor(V9$task, levels = c(0,1), labels = c('WM only', 'dual task'))
+
+# pickup here
+V9$distractornew <- ifelse(V9$distractor == 'present' & V9$distractortask == 1, 'change', ifelse(V9$distractor == 'none','none', ifelse(V9$distractor == 'present' )))
+```
+## Individual subject quality check
+```{r}
+# check for non-responses to trials oris
+  nonrespcheck <- V9 %>% group_by(subject) %>% count(resp)
+  nonrespcheck <- nonrespcheck %>% filter(is.nan(resp))
+  ntrials <- V9 %>% count(subject)
+  for(i in 1:nrow(nonrespcheck)){if (nonrespcheck$n[i] >(.45*ntrials$n[i])) {
+    print(paste0('exclude subject ', nonrespcheck$subject[i], ' no response'))
+  #bad_subs <- c(bad_subs, nonrespcheck$subject[i])
+  }}
+  
+# check for non-responses to trials dist change
+  rectrespcheck <- V10 %>% group_by(subject) %>% filter(distractor == 'change') %>% count(dist)
+  rectrespcheck <- rectrespcheck %>% filter(is.na(dist))
+  
+  for(i in 1:nrow(rectrespcheck)){if (rectrespcheck$n[i] == 96) {
+    print(paste0('exclude subject ', rectrespcheck$subject[i], ' no response'))
+  #bad_subs <- c(bad_subs, nonrespcheck$subject[i])
+  }}  
+  
+```
+# remove nan trials and bad subs
+```{r}
+V9 <- V9 %>% filter(!subject == 51, !subject ==39)
+
+# remove trials with NaN responses
+V9 <- V9 %>% filter(!is.nan(resp))
+
+# check V9 counterbalance
+# V9dist<- V9 %>% group_by(subject) %>% count(distractor) # distractor ok - flag sub 3 9
+# V9kap<- V9 %>% group_by(subject) %>% count(kappa) # kappa ok - flag sub 1 4 9 10 13 
+# V9task<- V9 %>% group_by(subject) %>% count(distractortask) # task ok - flag 1 4 9 10 11
+```
+# CircStats
+```{r}
+
+dfV9.circstats = V9 %>%
+  group_by(subject, kappa, distractor) %>%
+  summarize(circ_mean = mean.circular(circular((acc*pi/180))),
+            circ_sd = sd.circular(circular((acc*pi/180))),
+            .groups = "keep") %>%
+  mutate(id = as.factor(subject))
+
+n_subj = n_distinct(dfV9.circstats$subject)
+       
+dfV9.circstats_plt = dfV9.circstats %>%
+  group_by(kappa, distractor) %>%
+  summarize(mean_sd = mean(circ_sd),
+            sd_sd = sd(circ_sd),
+            se_sd = sd_sd/sqrt(n_subj),
+            .groups = "keep") %>%
+  ungroup()
+
+
+```
+# Plots CircStats
+```{r}
+cs = viridis(20)
+dfV9.circstats_plt$mean_sd_deg <- (dfV9.circstats_plt$mean_sd*(180/pi))
+dfV9.circstats_plt$se_sd_deg <- (dfV9.circstats_plt$se_sd*(180/pi))
+dfV9.circstats_plt %>%
+  ggplot(aes(x=distractor, y=mean_sd_deg, fill=kappa)) + 
+  geom_bar(stat="identity", position=position_dodge2(preserve="single")) +
+  geom_errorbar(aes(ymin=mean_sd_deg-se_sd_deg, ymax=mean_sd_deg+se_sd_deg), width=.2,
+                 position=position_dodge(.9)) +
+  labs(x="Distractor",y="Error (\u00B0)") +
+  #facet_wrap(~task)+
+  scale_fill_manual(name="Stimulus Noise", labels = c("Low",'Medium',"High"),
+                    values = c(cs[13],cs[8], cs[4])) +
+  scale_x_discrete(labels=c("None","Present")) +
+  #annotate('text', label='V8', x=-Inf, y=Inf, hjust=0, vjust=1)+ # label version
+  theme(panel.grid.major.x = element_blank(), panel.background = element_blank(),
+        panel.grid = element_line(color = "gray"), text = element_text(size=15))
+
+ggsave(plot = last_plot(), filename="plots/V9updated.eps", width=6.5, height=3,dpi=400)
+```
+# BF mixed effects anova
+```{r}
+# V9
+BFrmV9 <- anovaBF(circ_sd ~ kappa + distractor + kappa:distractor + id,
+data = dfV9.circstats, whichRandom = "id", whichModels = 'all') # Bayesian mixed effects ANOVA
+BFrmV9
+
+```
+# Repeat with dual task as effect for only distractor trials
+``` {r}
+# treat this experiment as dual task for the whole thing
+
+# V9
+dfV9dist.circstats = V9 %>% filter(distractor == 'present') %>%
+  group_by(subject, kappa, task) %>%
+  summarize(circ_mean = mean.circular(circular((acc*pi/180))),
+            circ_sd = sd.circular(circular((acc*pi/180))),
+            .groups = "keep") %>%
+  mutate(id = as.factor(subject))
+
+n_subj = n_distinct(dfV9dist.circstats$subject)
+       
+dfV9dist.circstats_plt = dfV9dist.circstats %>%
+  group_by(kappa, task) %>%
+  summarize(mean_sd = mean(circ_sd),
+            sd_sd = sd(circ_sd),
+            se_sd = sd_sd/sqrt(n_subj),
+            .groups = "keep") %>%
+  ungroup()
+
+dfV9dist.circstats_plt$mean_sd_deg <- (dfV9dist.circstats_plt$mean_sd*(180/pi))
+dfV9dist.circstats_plt$se_sd_deg <- (dfV9dist.circstats_plt$se_sd*(180/pi))
+dfV9dist.circstats_plt %>%
+  ggplot(aes(x=task, y=mean_sd_deg, fill=kappa)) + 
+  geom_bar(stat="identity", position=position_dodge2(preserve="single")) +
+  geom_errorbar(aes(ymin=mean_sd_deg-se_sd_deg, ymax=mean_sd_deg+se_sd_deg), width=.2,
+                 position=position_dodge(.9)) +
+  labs(x="Task",y="Error (\u00B0)") +
+  scale_fill_manual(name="Display condition", labels = c("Low",'Medium',"High"),
+                    values = c(cs[13],cs[8], cs[4])) +
+  scale_x_discrete(labels=c("None","Attention Task")) +
+  #annotate('text', label='V8', x=-Inf, y=Inf, hjust=0, vjust=1)+ # label version
+  theme(panel.grid.major.x = element_blank(), panel.background = element_blank(),
+        panel.grid = element_line(color = "gray"), text = element_text(size=15))
+
+ggsave(plot = last_plot(), filename="plots/V9dist.eps", width=6.5, height=3,dpi=400)
+
+# V9 dist
+BFrmV9dist <- anovaBF(circ_sd ~ kappa + task+ kappa:task + id,
+data = dfV9dist.circstats, whichRandom = "id",whichModels = 'all') # Bayesian mixed effects ANOVA
+BFrmV9dist
+```
+# partial eta squared
+```{r}
+
+# partial eta squared for effect size
+V9_aov <- dfV9.circstats %>%
+  aov(circ_sd ~ kappa + distractor + Error(id) +distractor:kappa, data=.)
+DescTools::EtaSq(V9_aov, type = 1)
+
+
+```
+# look at bias
+```{r}
+# wrap 180 and 0 using mod?
+if x-y>90 then abs(x-180)
+
+# scatter plot presented ori vs responded ori
+  ggplot(V9, aes(x = orient, y = resp, color = kappa)) +
+  geom_point() +
+  # Set the x-axis labels and tick marks
+  scale_x_continuous(
+    breaks = c(0, 45, 90, 135, 180),
+    labels = c("0°", "45°", "90°", "135°", "180°"),
+    limits = c(0, 180)
+  ) +
+  # Set the y-axis labels and tick marks
+  scale_y_continuous(
+    breaks = c(20, 40, 60, 80, 100, 120, 140, 160),
+    labels = c("20°", "40°", "60°", "80°", "100°", "120°", "140°", "160°"),
+    limits = c(0, 180)
+  ) +
+  # Add x-axis and y-axis titles
+  labs(x = "Angle (degrees)", y = "Angle (degrees)") +
+  # Add a color scale legend
+  scale_color_manual(values = c(cs[13], cs[8],cs[4])) +
+  # Add a size scale legend
+  scale_size(range = c(2, 8)) 
+  
+```
